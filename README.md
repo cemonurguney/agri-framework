@@ -4,11 +4,8 @@ Akıllı tarım için makine öğrenimi/derin öğrenme çerçevesi. Veri hazır
 
 ## Özellikler
 - Modüler veri hattı: `datasets/` ve `src/data/` ile kolay genişletme
-- Deney yönetimi: `configs/*.yaml` ile çoğaltılabilir koşular
 - Eğitim/validasyon/test döngüsü
-- Metrikler ve kayıt: `wandb` veya yerel `runs/` klasörü
-- Model dışa aktarımı: `.pth / .onnx`
-- CLI arayüzü: `train.py`, `eval.py`, `infer.py`
+- CLI arayüzü: `train.py`, `infer.py`
 
 ---
 
