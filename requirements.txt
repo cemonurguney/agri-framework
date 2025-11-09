@@ -12,10 +12,11 @@ timm==0.9.2
 # CPU:
 #   pip install torch torchvision torchaudio
 # CUDA 12.1 (NVIDIA):
-#   pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 
 # Utils / Extras
 pandas
 matplotlib
 tabulate
 scikit-learn
+
