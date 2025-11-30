@@ -74,7 +74,7 @@ def main():
 
     model = smp.Unet(
         encoder_name="timm-efficientnet-b3",  # DEĞİŞTİ
-        encoder_weights=None,  # timm üzerinden çeker
+        encoder_weights="imagenet",  # timm üzerinden çeker
         in_channels=3,
         classes=1
     ).to(dev)
