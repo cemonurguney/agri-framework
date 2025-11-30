@@ -1,6 +1,9 @@
+from pathlib import Path
 import argparse, os, csv, glob
 import cv2
 import numpy as np
+
+
 
 # ---------- Preprocess ----------
 
@@ -27,7 +30,7 @@ def compute_exg(img_bgr):
     img = img_bgr.astype(np.float32) / 255.0
     b, g, r = cv2.split(img)
     exg = 2 * g - r - b
-    return exg  # normalizasyonu sonra yapacağız
+    return exg
 
 def compute_vari(img_bgr):
     img = img_bgr.astype(np.float32) / 255.0
@@ -46,7 +49,6 @@ def norm_to_uint8(arr):
 def kmeans_veg_mask(img_bgr, exg):
     h, w, _ = img_bgr.shape
 
-    # küçült, hız için
     target_w = 256
     scale = target_w / float(w)
     small_w = target_w
@@ -64,24 +66,20 @@ def kmeans_veg_mask(img_bgr, exg):
     K = 3
     _, labels, centers = cv2.kmeans(Z, K, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
 
-    # son sütun ExG; en yüksek ExG ortalamalı cluster bitki
     veg_cluster = np.argmax(centers[:, -1])
     mask_small = (labels.reshape((small_h, small_w)) == veg_cluster).astype(np.uint8)
 
-    # orijinal boyuta getir
     mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
     return mask
 
 # ---------- Ana maske üretici ----------
 
 def make_mask(img_bgr):
-    # preprocess
     img_pp = clahe_rgb(gray_world(img_bgr))
 
     exg = compute_exg(img_pp)
     vari = compute_vari(img_pp)
 
-    # 1) ExG + Otsu
     exg_u8 = norm_to_uint8(exg)
     exg_blur = cv2.GaussianBlur(exg_u8, (5, 5), 0)
     _, m1 = cv2.threshold(exg_blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -90,9 +88,7 @@ def make_mask(img_bgr):
 
     if 0.02 < r1 < 0.7:
         base_mask = m1
-        ratio = r1
     else:
-        # 2) VARI + Otsu
         vari_u8 = norm_to_uint8(vari)
         vari_blur = cv2.GaussianBlur(vari_u8, (5, 5), 0)
         _, m2 = cv2.threshold(vari_blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -101,14 +97,10 @@ def make_mask(img_bgr):
 
         if 0.02 < r2 < 0.7:
             base_mask = m2
-            ratio = r2
         else:
-            # 3) fallback: k-means
             km = kmeans_veg_mask(img_pp, exg)
             base_mask = km
-            ratio = km.mean()
 
-    # morfolojik temizlik + alan filtresi
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(base_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -144,7 +136,6 @@ def process(in_dir, out_dir, csv_path, save_masks_dir=None):
 
         mask, ratio = make_mask(img)
 
-        # overlay görsel
         overlay = img.copy()
         overlay[mask > 0] = (
             0.55 * overlay[mask > 0] + 0.45 * np.array([0, 0, 255])
@@ -170,6 +161,16 @@ def process(in_dir, out_dir, csv_path, save_masks_dir=None):
         csv.writer(f).writerows(rows)
     print(f"[✓] CSV yazıldı → {csv_path}")
 
+# ---------- main(args) ----------
+
+def main(args):
+    process(
+        args.in_dir,
+        args.out_dir,
+        args.csv,
+        save_masks_dir=(args.save_masks_dir if getattr(args, "save_masks_dir", "") else None),
+    )
+
 # ---------- CLI ----------
 
 if __name__ == "__main__":
@@ -179,10 +180,4 @@ if __name__ == "__main__":
     ap.add_argument("--csv", required=True, help="Özet CSV yolu (örn. outputs/pseudo/area.csv)")
     ap.add_argument("--save_masks_dir", default="", help="Opsiyonel: ikili maskeleri kaydet (örn. data/masks_pseudo)")
     args = ap.parse_args()
-
-    process(
-        args.in_dir,
-        args.out_dir,
-        args.csv,
-        save_masks_dir=(args.save_masks_dir if args.save_masks_dir else None),
-    )
+    main(args)
