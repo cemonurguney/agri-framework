@@ -33,8 +33,4 @@ python .\dl\train_smp.py --img_dir .\data\images --mask_dir .\data\masks --out_d
 ```bash
 python .\dl\infer_smp.py --img_dir .\data\test_images --out_dir .\outputs\pred_dl --size 384 --model .\outputs\model_smp.pt
 ```
-#### Pseudo Üretim
-```bash
-python classic/vari_otsu.py --in_dir data/images --out_dir outputs/pseudo --csv outputs/pseudo/area.csv --save_masks_dir data/masks_pseudo
-```
 
