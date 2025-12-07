@@ -181,3 +181,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+#!python run.py test --model_name unet --run_name unet_v2 --size 512 --dataset cwfid --test_tag cwfid_ours
