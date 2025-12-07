@@ -122,8 +122,12 @@ def process(in_dir, out_dir, csv_path, save_masks_dir=None):
         os.makedirs(save_masks_dir, exist_ok=True)
 
     rows = [["filename", "green_area_ratio(0-1)"]]
-    image_paths = sorted(glob.glob(os.path.join(in_dir, "*.jpg")) +
-                         glob.glob(os.path.join(in_dir, "*.png")))
+    image_paths = sorted(
+        glob.glob(os.path.join(in_dir, "*.jpg"))  +
+        glob.glob(os.path.join(in_dir, "*.JPG"))  +
+        glob.glob(os.path.join(in_dir, "*.jpeg")) +
+        glob.glob(os.path.join(in_dir, "*.JPEG")) 
+    )
     if not image_paths:
         print(f"[!] '{in_dir}' içinde .jpg/.png yok.")
         return

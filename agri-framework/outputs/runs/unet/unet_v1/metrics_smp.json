@@ -1,0 +1,7 @@
+{
+  "best_mIoU": 0.644067358970642,
+  "best_F1": 0.7833449616882084,
+  "epoch": 20,
+  "model_name": "unet",
+  "run_name": "unet_v1"
+}

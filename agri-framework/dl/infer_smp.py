@@ -1,14 +1,42 @@
 from pathlib import Path
-import os, argparse, cv2, numpy as np, torch
+import os, argparse
+import cv2
+import numpy as np
+import torch
 import segmentation_models_pytorch as smp
 
+
+def iou_f1(prob, y, thr=0.5, eps=1e-6):
+    p = (prob > thr).float()
+    inter = (p * y).sum()
+    union = p.sum() + y.sum() - inter
+    iou = ((inter + eps) / (union + eps)).item()
+    prec = (inter / (p.sum() + eps)).item() if p.sum() > 0 else 0.0
+    rec = (inter / (y.sum() + eps)).item() if y.sum() > 0 else 0.0
+    f1 = (2 * prec * rec / (prec + rec + eps)) if (prec + rec) > 0 else 0.0
+    return iou, f1
+
+
 def main(args):
-    os.makedirs(args.out_dir, exist_ok=True)
+    # run.py'den gelmeyen kullanımda da patlamasın diye getattr
+    run_dir = getattr(args, "run_dir", None)
+    test_tag = getattr(args, "test_tag", "test")
+    out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
+
+    # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
+    if run_dir is not None and out_dir_arg == "outputs":
+        out_dir = Path(run_dir) / f"pred_{test_tag}"
+    elif run_dir is not None and out_dir_arg == "outputs/pred_dl":
+        out_dir = Path(run_dir) / f"pred_{test_tag}"
+    else:
+        out_dir = Path(out_dir_arg)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     model = smp.Unet(
         encoder_name="timm-efficientnet-b3",
-        encoder_weights="imagenet",
+        encoder_weights=None,  # zaten weight yükleyeceğiz
         in_channels=3,
         classes=1
     ).to(dev)
@@ -21,21 +49,25 @@ def main(args):
     model.eval()
 
     exts = (".jpg", ".png", ".jpeg")
-    imgs = [
-        os.path.join(args.img_dir, f)
-        for f in os.listdir(args.img_dir)
+    img_files = sorted([
+        f for f in os.listdir(args.img_dir)
         if f.lower().endswith(exts)
-    ]
+    ])
+
+    has_masks = args.mask_dir is not None and os.path.isdir(args.mask_dir)
+    ious, f1s = [], []
 
     with torch.no_grad():
-        for ip in imgs:
-            name = os.path.basename(ip)
+        for name in img_files:
+            ip = os.path.join(args.img_dir, name)
             im = cv2.cvtColor(cv2.imread(ip), cv2.COLOR_BGR2RGB)
             r = cv2.resize(im, (args.size, args.size))
             x = torch.from_numpy(r).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
             m = (p > 0.5).astype(np.uint8)
 
+            # Overlay
             overlay = r.copy()
             overlay[m > 0] = (
                 0.55 * overlay[m > 0] + 0.45 * np.array([255, 0, 0])
@@ -43,9 +75,40 @@ def main(args):
             edges = cv2.Canny((m * 255).astype(np.uint8), 0, 1)
             overlay[edges > 0] = [255, 0, 0]
             vis = np.hstack([r, overlay])
-            cv2.imwrite(os.path.join(args.out_dir, name),
-                        cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
-    print("[✓] örnekler:", args.out_dir)
+
+            cv2.imwrite(
+                str(out_dir / name),
+                cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
+            )
+
+            # Test metriği (opsiyonel)
+            if has_masks:
+                base = os.path.splitext(name)[0] + ".png"
+                mp = os.path.join(args.mask_dir, base)
+                gt = cv2.imread(mp, 0)
+                if gt is not None:
+                    gt = cv2.resize(gt, (args.size, args.size))
+                    gt = torch.from_numpy((gt > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                    prob_t = torch.from_numpy(p).unsqueeze(0).unsqueeze(0)
+                    iou, f1 = iou_f1(prob_t, gt)
+                    ious.append(iou)
+                    f1s.append(f1)
+
+    # Test metriklerini run klasörüne yaz (varsa)
+    if has_masks and run_dir is not None:
+        import json
+        test_metrics = {
+            "mIoU": float(np.mean(ious)) if ious else 0.0,
+            "F1": float(np.mean(f1s)) if f1s else 0.0,
+            "n_samples": len(ious),
+            "test_tag": test_tag,
+        }
+        with open(Path(run_dir) / f"test_metrics_{test_tag}.json", "w") as f:
+            json.dump(test_metrics, f, indent=2)
+        print("[✓] test metrics:", test_metrics)
+
+    print("[✓] örnekler:", out_dir)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -53,5 +116,11 @@ if __name__ == "__main__":
     ap.add_argument("--out_dir", default="outputs/pred_dl")
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--model", default="outputs/model_smp.pt")
+
+    # Yeni: run + opsiyonel test mask
+    ap.add_argument("--run_dir", default=None)
+    ap.add_argument("--test_tag", default="test")
+    ap.add_argument("--mask_dir", default=None)
+
     args = ap.parse_args()
     main(args)
