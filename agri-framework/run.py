@@ -5,11 +5,17 @@ from pathlib import Path
 from dl import train_smp, infer_smp
 
 
-# Tek dataset preset'in var: images + masks + test_images
+# Kendi dataset'in (pseudo'lu olan)
 DATA_CFG = {
     "img_dir": "data/images",
     "mask_dir": "data/masks",
     "test_images": "data/test_images",
+}
+
+# CWFID benchmark dataseti (sadece TEST için)
+CWFID_CFG = {
+    "img_dir": "data_cwfid/images",
+    "mask_dir": "data_cwfid/masks",
 }
 
 
@@ -60,7 +66,13 @@ def _find_latest_run(out_dir: Path, model_name: str):
 
 
 def cmd_test(args):
-    img_dir = DATA_CFG["test_images"]
+    # Hangi dataset ile test ediyoruz?
+    if args.dataset == "cwfid":
+        img_dir = CWFID_CFG["img_dir"]
+        mask_dir = CWFID_CFG["mask_dir"]
+    else:
+        img_dir = DATA_CFG["test_images"]
+        mask_dir = DATA_CFG["mask_dir"]
 
     out_root = Path(args.out_dir)
     model_name = args.model_name.lower()
@@ -80,8 +92,10 @@ def cmd_test(args):
         model_path = Path(args.model)
 
     print("[INFO] Test / infer:")
+    print(f"   dataset    = {args.dataset}")
     print(f"   model_name = {model_name}")
-    print(f"   test_imgs  = {img_dir}")
+    print(f"   img_dir    = {img_dir}")
+    print(f"   mask_dir   = {mask_dir}")
     print(f"   out_root   = {args.out_dir}")
     print(f"   model      = {model_path}")
     print(f"   run_dir    = {run_dir if run_dir is not None else '(yok / kullanılmıyor)'}")
@@ -98,7 +112,7 @@ def cmd_test(args):
         model=str(model_path),
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
-        mask_dir=None,
+        mask_dir=mask_dir,     # BURADAN GT maskeleri gidiyor
         thr=args.thr,
         min_area=args.min_area,
         prob_thr=args.prob_thr,
@@ -151,6 +165,8 @@ def main():
                       help="Component area filtresi")
     p_te.add_argument("--prob_thr", type=float, default=0.65,
                       help="Component ortalama prob eşiği")
+    p_te.add_argument("--dataset", default="default", choices=["default", "cwfid"],
+                      help="Test dataseti: default ya da cwfid")
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
