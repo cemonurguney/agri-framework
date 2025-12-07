@@ -12,7 +12,7 @@ DATA_CFG = {
     "test_images": "data/test_images",
 }
 
-# CWFID benchmark dataseti (sadece TEST için)
+# CWFID benchmark dataseti (SADECE TEST İÇİN)
 CWFID_CFG = {
     "img_dir": "data_cwfid/images",
     "mask_dir": "data_cwfid/masks",
@@ -107,12 +107,12 @@ def cmd_test(args):
 
     infer_args = argparse.Namespace(
         img_dir=img_dir,
-        out_dir=args.out_dir,  # infer run_dir'ü görünce run içini kullanacak
+        out_dir=args.out_dir,  # infer run_dir varsa onun içine yazar
         size=args.size,
         model=str(model_path),
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
-        mask_dir=mask_dir,     # BURADAN GT maskeleri gidiyor
+        mask_dir=mask_dir,     # BURADAN GT maskeler gidiyor, skor buradan hesaplanıyor
         thr=args.thr,
         min_area=args.min_area,
         prob_thr=args.prob_thr,
@@ -165,8 +165,12 @@ def main():
                       help="Component area filtresi")
     p_te.add_argument("--prob_thr", type=float, default=0.65,
                       help="Component ortalama prob eşiği")
-    p_te.add_argument("--dataset", default="default", choices=["default", "cwfid"],
-                      help="Test dataseti: default ya da cwfid")
+    p_te.add_argument(
+        "--dataset",
+        default="default",
+        choices=["default", "cwfid"],
+        help="Test dataseti: default ya da cwfid",
+    )
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
