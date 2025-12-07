@@ -30,21 +30,14 @@ def build_val_aug(size):
     ])
 
 
-def exg_vari_mask(
-    rgb,
-    exg_thr=15.0,
-    vari_thr=0.10,
-    g_delta=5.0,
-    g_ratio=1.10,
-):
+def exg_vari_mask(rgb, vari_q=0.7):
     """
+    Adaptif ExG + VARI maskeleme.
+    - ExG için Otsu threshold
+    - VARI için quantile (varsayılan en üst %30)
+
     rgb: HxWx3, uint8 (0-255)
-    Oldukça agresif bir 'yeşil' filtresi:
-      - ExG yüksek
-      - VARI yüksek
-      - G kanalı R/B'den anlamlı yüksek
-      - G, (R+B)'ye göre de yüksek oranlı
-    Çıktı: 0/1 uint8 maske
+    çıktı: 0/1 uint8
     """
     rgb = rgb.astype(np.float32)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
@@ -52,12 +45,25 @@ def exg_vari_mask(
     exg = 2 * g - r - b
     vari = (g - r) / (g + r - b + 1e-6)
 
-    g_dom = (g - np.maximum(r, b)) > g_delta
-    gr = g / (r + b + 1e-6)
-    g_ratio_mask = gr > g_ratio
+    # --- ExG: Otsu ile adaptif eşik ---
+    exg_norm = cv2.normalize(exg, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    _, exg_bin = cv2.threshold(
+        exg_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    m_exg = exg_bin > 0
 
-    m = (exg > exg_thr) & (vari > vari_thr) & g_dom & g_ratio_mask
-    return m.astype(np.uint8)
+    # --- VARI: üst quantile (örn. %70) ---
+    vari_flat = vari.reshape(-1)
+    # sadece finite değerlerle uğraş
+    vari_flat = vari_flat[np.isfinite(vari_flat)]
+    if vari_flat.size == 0:
+        m_vari = np.zeros_like(vari, dtype=bool)
+    else:
+        thr_vari = np.quantile(vari_flat, vari_q)
+        m_vari = vari > thr_vari
+
+    m = (m_exg & m_vari).astype(np.uint8)
+    return m
 
 
 def postprocess_mask(m, min_area=50):
@@ -152,7 +158,7 @@ def main(args):
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
             m_dl = (p > thr).astype(np.uint8)
 
-            # Renk bazlı ön-maske (ExG + VARI + G dominance)
+            # Renk bazlı ön-maske (adaptif ExG + VARI)
             m_color = exg_vari_mask(r)
             m_color = (m_color > 0).astype(np.uint8)
 
@@ -218,7 +224,7 @@ if __name__ == "__main__":
 
     # Gürültü kontrol parametreleri
     ap.add_argument("--thr", type=float, default=0.6)
-    ap.add_argument("--min_area", type=int, default=50)
+    ap.add_argument("--min_area", type=int, default=80)
 
     args = ap.parse_args()
     main(args)
