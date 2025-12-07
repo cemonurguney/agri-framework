@@ -30,11 +30,11 @@ def build_val_aug(size):
     ])
 
 
-def exg_vari_mask(rgb, vari_q=0.7):
+def exg_vari_mask(rgb, vari_q=0.65):
     """
     Adaptif ExG + VARI maskeleme.
     - ExG için Otsu threshold
-    - VARI için quantile (varsayılan en üst %30)
+    - VARI için quantile (varsayılan en üst ~%35)
 
     rgb: HxWx3, uint8 (0-255)
     çıktı: 0/1 uint8
@@ -52,9 +52,8 @@ def exg_vari_mask(rgb, vari_q=0.7):
     )
     m_exg = exg_bin > 0
 
-    # --- VARI: üst quantile (örn. %70) ---
+    # --- VARI: üst quantile ---
     vari_flat = vari.reshape(-1)
-    # sadece finite değerlerle uğraş
     vari_flat = vari_flat[np.isfinite(vari_flat)]
     if vari_flat.size == 0:
         m_vari = np.zeros_like(vari, dtype=bool)
@@ -66,11 +65,12 @@ def exg_vari_mask(rgb, vari_q=0.7):
     return m
 
 
-def postprocess_mask(m, min_area=50):
+def postprocess_mask(m, prob=None, min_area=50, prob_thr=None):
     """
     m: (H,W) uint8 {0,1}
     - open + close
     - küçük componentleri sil
+    - (opsiyonel) component ortalama prob < prob_thr ise sil
     """
     m = (m > 0).astype(np.uint8)
 
@@ -79,9 +79,23 @@ def postprocess_mask(m, min_area=50):
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] < min_area:
-            m[labels == i] = 0
+
+    if prob is not None and prob_thr is not None:
+        # prob: HxW (0-1)
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < min_area:
+                m[labels == i] = 0
+                continue
+
+            mask_i = labels == i
+            mean_p = float(prob[mask_i].mean()) if mask_i.any() else 0.0
+            if mean_p < prob_thr:
+                m[mask_i] = 0
+    else:
+        for i in range(1, num_labels):
+            if stats[i, cv2.CC_STAT_AREA] < min_area:
+                m[labels == i] = 0
 
     return m
 
@@ -94,7 +108,7 @@ def main(args):
 
     # Threshold ve min_area defaultlarını güvene al
     thr = getattr(args, "thr", 0.6)
-    min_area = getattr(args, "min_area", 50)
+    min_area = getattr(args, "min_area", 80)  # biraz yukarı aldım
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -155,7 +169,7 @@ def main(args):
             x = torch.from_numpy(r).permute(2, 0, 1).float().unsqueeze(0) / 255.0
 
             # DL çıktısı (prob)
-            p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
+            p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]  # HxW, 0-1
             m_dl = (p > thr).astype(np.uint8)
 
             # Renk bazlı ön-maske (adaptif ExG + VARI)
@@ -165,8 +179,8 @@ def main(args):
             # DL + renk öncülü kesişimi
             m = (m_dl & m_color).astype(np.uint8)
 
-            # Post-process
-            m = postprocess_mask(m, min_area=min_area)
+            # Post-process + prob filtresi
+            m = postprocess_mask(m, prob=p, min_area=min_area, prob_thr=0.7)
 
             # Overlay
             overlay = r.copy()
