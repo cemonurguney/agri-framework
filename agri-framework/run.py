@@ -30,6 +30,7 @@ def cmd_train(args):
     print(f"   batch      = {args.batch}")
     print(f"   epochs     = {args.epochs}")
     print(f"   lr         = {args.lr}")
+    print(f"   pos_weight = {args.pos_weight}")
 
     train_args = argparse.Namespace(
         img_dir=img_dir,
@@ -41,6 +42,7 @@ def cmd_train(args):
         lr=args.lr,
         model_name=model_name,
         run_name=run_name,
+        pos_weight=args.pos_weight,
     )
 
     train_smp.main(train_args)
@@ -85,15 +87,19 @@ def cmd_test(args):
     print(f"   run_dir    = {run_dir if run_dir is not None else '(yok / kullanılmıyor)'}")
     print(f"   size       = {args.size}")
     print(f"   test_tag   = {args.test_tag}")
+    print(f"   thr        = {args.thr}")
+    print(f"   min_area   = {args.min_area}")
 
     infer_args = argparse.Namespace(
         img_dir=img_dir,
-        out_dir=args.out_dir,  # infer run_dir'ü görünce zaten run içini kullanacak
+        out_dir=args.out_dir,  # infer run_dir'ü görünce run içini kullanacak
         size=args.size,
         model=str(model_path),
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
-        mask_dir=None,  # ileride test mask klasörü eklemek istersen burayı değiştiririz
+        mask_dir=None,  # ileride test mask klasörü eklemek istersen burayı değiştirirsin
+        thr=args.thr,
+        min_area=args.min_area,
     )
 
     infer_smp.main(infer_args)
@@ -110,7 +116,7 @@ def main():
     p_tr.set_defaults(func=cmd_train)
     p_tr.add_argument("--out_dir", default=default_out,
                       help="Çıktı kök klasörü (default: outputs)")
-    p_tr.add_argument("--size", type=int, default=384)
+    p_tr.add_argument("--size", type=int, default=512)
     p_tr.add_argument("--batch", type=int, default=4)
     p_tr.add_argument("--epochs", type=int, default=20)
     p_tr.add_argument("--lr", type=float, default=3e-4)
@@ -118,13 +124,15 @@ def main():
                       help="unet | unetpp | deeplabv3p | fpn")
     p_tr.add_argument("--run_name", default=None,
                       help="Run klasörü ismi; boşsa timestamp")
+    p_tr.add_argument("--pos_weight", type=float, default=1.0,
+                      help="BCEWithLogits pos_weight (class imbalance için)")
 
     # TEST
     p_te = sub.add_parser("test", help="Test / inference")
     p_te.set_defaults(func=cmd_test)
     p_te.add_argument("--out_dir", default=default_out,
                       help="Çıktı kök klasörü (default: outputs)")
-    p_te.add_argument("--size", type=int, default=384)
+    p_te.add_argument("--size", type=int, default=512)
     p_te.add_argument("--model", default="outputs/model_smp.pt",
                       help="Model dosyası; run_dir varsa override edilir")
     p_te.add_argument("--model_name", default="unet",
@@ -135,6 +143,10 @@ def main():
                       help="run_name yoksa, ilgili model için en son run'ı kullan")
     p_te.add_argument("--test_tag", default="test",
                       help="run_dir içindeki pred_<test_tag> klasör adı")
+    p_te.add_argument("--thr", type=float, default=0.6,
+                      help="Infer threshold (mask binarization)")
+    p_te.add_argument("--min_area", type=int, default=50,
+                      help="Post-process için min connected component alanı")
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

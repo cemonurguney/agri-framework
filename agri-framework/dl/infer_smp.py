@@ -3,10 +3,11 @@ import os, argparse
 import cv2
 import numpy as np
 import torch
+import albumentations as A
 import segmentation_models_pytorch as smp
 
 
-def iou_f1(prob, y, thr=0.5, eps=1e-6):
+def iou_f1(prob, y, thr=0.6, eps=1e-6):
     p = (prob > thr).float()
     inter = (p * y).sum()
     union = p.sum() + y.sum() - inter
@@ -17,11 +18,43 @@ def iou_f1(prob, y, thr=0.5, eps=1e-6):
     return iou, f1
 
 
+def build_val_aug(size):
+    return A.Compose([
+        A.LongestMaxSize(max_size=size),
+        A.PadIfNeeded(size, size, border_mode=cv2.BORDER_REFLECT_101),
+        A.CenterCrop(size, size),
+    ])
+
+
+def postprocess_mask(m, min_area=50):
+    """
+    m: (H,W) uint8 {0,1}
+    - open + close
+    - küçük componentleri sil
+    """
+    m = (m > 0).astype(np.uint8)
+
+    kernel = np.ones((3, 3), np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] < min_area:
+            m[labels == i] = 0
+
+    return m
+
+
 def main(args):
     # run.py'den gelmeyen kullanımda da patlamasın diye getattr
     run_dir = getattr(args, "run_dir", None)
     test_tag = getattr(args, "test_tag", "test")
     out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
+
+    # Threshold ve min_area defaultlarını güvene al
+    thr = getattr(args, "thr", 0.6)
+    min_area = getattr(args, "min_area", 50)
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -57,15 +90,32 @@ def main(args):
     has_masks = args.mask_dir is not None and os.path.isdir(args.mask_dir)
     ious, f1s = [], []
 
+    aug = build_val_aug(args.size)
+
     with torch.no_grad():
         for name in img_files:
             ip = os.path.join(args.img_dir, name)
             im = cv2.cvtColor(cv2.imread(ip), cv2.COLOR_BGR2RGB)
-            r = cv2.resize(im, (args.size, args.size))
+
+            gt = None
+            if has_masks:
+                base = os.path.splitext(name)[0] + ".png"
+                mp = os.path.join(args.mask_dir, base)
+                if os.path.isfile(mp):
+                    gt = cv2.imread(mp, 0)
+
+            if gt is not None:
+                data = aug(image=im, mask=gt)
+                r, gt_t = data["image"], data["mask"]
+            else:
+                data = aug(image=im)
+                r, gt_t = data["image"], None
+
             x = torch.from_numpy(r).permute(2, 0, 1).float().unsqueeze(0) / 255.0
 
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
-            m = (p > 0.5).astype(np.uint8)
+            m = (p > thr).astype(np.uint8)
+            m = postprocess_mask(m, min_area=min_area)
 
             # Overlay
             overlay = r.copy()
@@ -82,17 +132,12 @@ def main(args):
             )
 
             # Test metriği (opsiyonel)
-            if has_masks:
-                base = os.path.splitext(name)[0] + ".png"
-                mp = os.path.join(args.mask_dir, base)
-                gt = cv2.imread(mp, 0)
-                if gt is not None:
-                    gt = cv2.resize(gt, (args.size, args.size))
-                    gt = torch.from_numpy((gt > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
-                    prob_t = torch.from_numpy(p).unsqueeze(0).unsqueeze(0)
-                    iou, f1 = iou_f1(prob_t, gt)
-                    ious.append(iou)
-                    f1s.append(f1)
+            if gt_t is not None:
+                gt_bin = torch.from_numpy((gt_t > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                prob_t = torch.from_numpy(p).unsqueeze(0).unsqueeze(0)
+                iou, f1 = iou_f1(prob_t, gt_bin, thr=thr)
+                ious.append(iou)
+                f1s.append(f1)
 
     # Test metriklerini run klasörüne yaz (varsa)
     if has_masks and run_dir is not None:
@@ -121,6 +166,10 @@ if __name__ == "__main__":
     ap.add_argument("--run_dir", default=None)
     ap.add_argument("--test_tag", default="test")
     ap.add_argument("--mask_dir", default=None)
+
+    # Gürültü kontrol parametreleri
+    ap.add_argument("--thr", type=float, default=0.6)
+    ap.add_argument("--min_area", type=int, default=50)
 
     args = ap.parse_args()
     main(args)

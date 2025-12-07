@@ -60,7 +60,8 @@ class SegDs(Dataset):
         return im, m
 
 
-def iou_f1(prob, y, thr=0.5, eps=1e-6):
+def iou_f1(prob, y, thr=0.6, eps=1e-6):
+    """Biraz daha sıkı threshold (0.6)."""
     p = (prob > thr).float()
     inter = (p * y).sum()
     union = p.sum() + y.sum() - inter
@@ -153,7 +154,10 @@ def main(args):
     # Model seçimi
     model = build_model(model_name).to(dev)
 
-    loss_bce = torch.nn.BCEWithLogitsLoss()
+    # Class imbalance için opsiyonel pos_weight
+    pw = getattr(args, "pos_weight", 1.0)  # run.py'den geliyorsa olmayabilir
+    pos_weight = torch.tensor([pw], device=dev)
+    loss_bce = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     def loss_fn(p, t):
         p_sig = torch.sigmoid(p)
@@ -194,7 +198,7 @@ def main(args):
             for x, y in dl_va:
                 x, y = x.to(dev), y.to(dev)
                 p = torch.sigmoid(model(x))
-                i, f1 = iou_f1(p, y)
+                i, f1 = iou_f1(p, y, thr=0.6)
                 ious.append(i)
                 f1s.append(f1)
 
@@ -208,7 +212,7 @@ def main(args):
 
         if miou > best:
             best = miou
-            # 1) Eski davranış (isteğe bağlı, hala dursun)
+            # 1) Eski davranış
             torch.save(model.state_dict(), legacy_model_path)
             with open(legacy_metrics_path, "w") as f:
                 json.dump(
@@ -254,6 +258,9 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--lr", type=float, default=3e-4)
+
+    # Class imbalance için
+    ap.add_argument("--pos_weight", type=float, default=1.0)
 
     # Yeni: yöntem seçimi + run adı
     ap.add_argument("--model_name", default="unet",

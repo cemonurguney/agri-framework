@@ -1,0 +1,12 @@
+{
+  "img_dir": "data/images",
+  "mask_dir": "data/masks",
+  "out_dir": "outputs",
+  "size": 512,
+  "batch": 4,
+  "epochs": 40,
+  "lr": 0.0003,
+  "model_name": "unet",
+  "run_name": "unet_exg_vari_v1",
+  "pos_weight": 2.0
+}
