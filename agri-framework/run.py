@@ -89,6 +89,7 @@ def cmd_test(args):
     print(f"   test_tag   = {args.test_tag}")
     print(f"   thr        = {args.thr}")
     print(f"   min_area   = {args.min_area}")
+    print(f"   prob_thr   = {args.prob_thr}")
 
     infer_args = argparse.Namespace(
         img_dir=img_dir,
@@ -97,9 +98,10 @@ def cmd_test(args):
         model=str(model_path),
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
-        mask_dir=None,  # ileride test mask klasörü eklemek istersen burayı değiştirirsin
+        mask_dir=None,
         thr=args.thr,
         min_area=args.min_area,
+        prob_thr=args.prob_thr,
     )
 
     infer_smp.main(infer_args)
@@ -143,10 +145,12 @@ def main():
                       help="run_name yoksa, ilgili model için en son run'ı kullan")
     p_te.add_argument("--test_tag", default="test",
                       help="run_dir içindeki pred_<test_tag> klasör adı")
-    p_te.add_argument("--thr", type=float, default=0.6,
-                      help="Infer threshold (mask binarization)")
-    p_te.add_argument("--min_area", type=int, default=50,
-                      help="Post-process için min connected component alanı")
+    p_te.add_argument("--thr", type=float, default=0.0,
+                      help="Pixel-level threshold (0 => kapalı)")
+    p_te.add_argument("--min_area", type=int, default=0,
+                      help="Component area filtresi (0 => kapalı)")
+    p_te.add_argument("--prob_thr", type=float, default=0.7,
+                      help="Component ortalama prob eşiği")
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

@@ -65,23 +65,22 @@ def exg_vari_mask(rgb, vari_q=0.65):
     return m
 
 
-def postprocess_mask(m, prob=None, min_area=50, prob_thr=None):
+def postprocess_mask(m, prob=None, min_area=0, prob_thr=None):
     """
     m: (H,W) uint8 {0,1}
-    - open + close
-    - küçük componentleri sil
-    - (opsiyonel) component ortalama prob < prob_thr ise sil
+    - hafif close + dilate (küçük delikleri kapat, detayları koru)
+    - küçük componentleri ve düşük ortalama prob'lu componentleri sil
     """
     m = (m > 0).astype(np.uint8)
 
     kernel = np.ones((3, 3), np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel)
+    # Opening'i kaldırdık, sadece close + küçük dilate:
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+    m = cv2.dilate(m, kernel, iterations=1)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
 
     if prob is not None and prob_thr is not None:
-        # prob: HxW (0-1)
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
             if area < min_area:
@@ -89,7 +88,11 @@ def postprocess_mask(m, prob=None, min_area=50, prob_thr=None):
                 continue
 
             mask_i = labels == i
-            mean_p = float(prob[mask_i].mean()) if mask_i.any() else 0.0
+            if not mask_i.any():
+                m[mask_i] = 0
+                continue
+
+            mean_p = float(prob[mask_i].mean())
             if mean_p < prob_thr:
                 m[mask_i] = 0
     else:
@@ -106,9 +109,10 @@ def main(args):
     test_tag = getattr(args, "test_tag", "test")
     out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
 
-    # Threshold ve min_area defaultlarını güvene al
-    thr = getattr(args, "thr", 0.6)
-    min_area = getattr(args, "min_area", 80)  # biraz yukarı aldım
+    # Threshold ve min_area / prob_thr defaultlarını güvene al
+    thr = getattr(args, "thr", 0.0)          # sen zaten 0 kullanıyorsun
+    min_area = getattr(args, "min_area", 0)  # küçük detayları kesmeyelim
+    prob_thr = getattr(args, "prob_thr", 0.7)
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -170,7 +174,7 @@ def main(args):
 
             # DL çıktısı (prob)
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]  # HxW, 0-1
-            m_dl = (p > thr).astype(np.uint8)
+            m_dl = (p > thr).astype(np.uint8)  # thr=0 ise her yer 1, sorun değil
 
             # Renk bazlı ön-maske (adaptif ExG + VARI)
             m_color = exg_vari_mask(r)
@@ -180,7 +184,7 @@ def main(args):
             m = (m_dl & m_color).astype(np.uint8)
 
             # Post-process + prob filtresi
-            m = postprocess_mask(m, prob=p, min_area=min_area, prob_thr=0.7)
+            m = postprocess_mask(m, prob=p, min_area=min_area, prob_thr=prob_thr)
 
             # Overlay
             overlay = r.copy()
@@ -237,8 +241,9 @@ if __name__ == "__main__":
     ap.add_argument("--mask_dir", default=None)
 
     # Gürültü kontrol parametreleri
-    ap.add_argument("--thr", type=float, default=0.6)
-    ap.add_argument("--min_area", type=int, default=80)
+    ap.add_argument("--thr", type=float, default=0.0)
+    ap.add_argument("--min_area", type=int, default=0)
+    ap.add_argument("--prob_thr", type=float, default=0.7)
 
     args = ap.parse_args()
     main(args)
