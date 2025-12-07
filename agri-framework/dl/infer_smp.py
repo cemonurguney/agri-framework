@@ -30,10 +30,21 @@ def build_val_aug(size):
     ])
 
 
-def exg_vari_mask(rgb, exg_thr=10.0, vari_thr=0.05):
+def exg_vari_mask(
+    rgb,
+    exg_thr=15.0,
+    vari_thr=0.10,
+    g_delta=5.0,
+    g_ratio=1.10,
+):
     """
     rgb: HxWx3, uint8 (0-255)
-    Çıktı: 0/1 uint8 maske (yeşil olma ihtimali yüksek yerler)
+    Oldukça agresif bir 'yeşil' filtresi:
+      - ExG yüksek
+      - VARI yüksek
+      - G kanalı R/B'den anlamlı yüksek
+      - G, (R+B)'ye göre de yüksek oranlı
+    Çıktı: 0/1 uint8 maske
     """
     rgb = rgb.astype(np.float32)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
@@ -41,11 +52,12 @@ def exg_vari_mask(rgb, exg_thr=10.0, vari_thr=0.05):
     exg = 2 * g - r - b
     vari = (g - r) / (g + r - b + 1e-6)
 
-    m1 = exg > exg_thr
-    m2 = vari > vari_thr
+    g_dom = (g - np.maximum(r, b)) > g_delta
+    gr = g / (r + b + 1e-6)
+    g_ratio_mask = gr > g_ratio
 
-    m = (m1 & m2).astype(np.uint8)
-    return m
+    m = (exg > exg_thr) & (vari > vari_thr) & g_dom & g_ratio_mask
+    return m.astype(np.uint8)
 
 
 def postprocess_mask(m, min_area=50):
@@ -140,7 +152,7 @@ def main(args):
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
             m_dl = (p > thr).astype(np.uint8)
 
-            # Renk bazlı ön-maske (ExG + VARI)
+            # Renk bazlı ön-maske (ExG + VARI + G dominance)
             m_color = exg_vari_mask(r)
             m_color = (m_color > 0).astype(np.uint8)
 
@@ -166,8 +178,12 @@ def main(args):
 
             # Test metriği (opsiyonel, varsa)
             if gt_t is not None:
-                gt_bin = torch.from_numpy((gt_t > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
-                pred_t = torch.from_numpy(m.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                gt_bin = torch.from_numpy(
+                    (gt_t > 127).astype(np.float32)
+                ).unsqueeze(0).unsqueeze(0)
+                pred_t = torch.from_numpy(
+                    m.astype(np.float32)
+                ).unsqueeze(0).unsqueeze(0)
                 iou, f1 = iou_f1(pred_t, gt_bin, thr=0.5)  # m zaten 0/1
                 ious.append(iou)
                 f1s.append(f1)
