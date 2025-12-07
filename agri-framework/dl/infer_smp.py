@@ -8,6 +8,10 @@ import segmentation_models_pytorch as smp
 
 
 def iou_f1(prob, y, thr=0.6, eps=1e-6):
+    """
+    prob: (1,1,H,W) tensör, 0-1 ya da 0/1
+    y   : (1,1,H,W) tensör, 0/1
+    """
     p = (prob > thr).float()
     inter = (p * y).sum()
     union = p.sum() + y.sum() - inter
@@ -24,6 +28,24 @@ def build_val_aug(size):
         A.PadIfNeeded(size, size, border_mode=cv2.BORDER_REFLECT_101),
         A.CenterCrop(size, size),
     ])
+
+
+def exg_vari_mask(rgb, exg_thr=10.0, vari_thr=0.05):
+    """
+    rgb: HxWx3, uint8 (0-255)
+    Çıktı: 0/1 uint8 maske (yeşil olma ihtimali yüksek yerler)
+    """
+    rgb = rgb.astype(np.float32)
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+
+    exg = 2 * g - r - b
+    vari = (g - r) / (g + r - b + 1e-6)
+
+    m1 = exg > exg_thr
+    m2 = vari > vari_thr
+
+    m = (m1 & m2).astype(np.uint8)
+    return m
 
 
 def postprocess_mask(m, min_area=50):
@@ -95,7 +117,8 @@ def main(args):
     with torch.no_grad():
         for name in img_files:
             ip = os.path.join(args.img_dir, name)
-            im = cv2.cvtColor(cv2.imread(ip), cv2.COLOR_BGR2RGB)
+            im_bgr = cv2.imread(ip)
+            im = cv2.cvtColor(im_bgr, cv2.COLOR_BGR2RGB)
 
             gt = None
             if has_masks:
@@ -113,8 +136,18 @@ def main(args):
 
             x = torch.from_numpy(r).permute(2, 0, 1).float().unsqueeze(0) / 255.0
 
+            # DL çıktısı (prob)
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]
-            m = (p > thr).astype(np.uint8)
+            m_dl = (p > thr).astype(np.uint8)
+
+            # Renk bazlı ön-maske (ExG + VARI)
+            m_color = exg_vari_mask(r)
+            m_color = (m_color > 0).astype(np.uint8)
+
+            # DL + renk öncülü kesişimi
+            m = (m_dl & m_color).astype(np.uint8)
+
+            # Post-process
             m = postprocess_mask(m, min_area=min_area)
 
             # Overlay
@@ -131,11 +164,11 @@ def main(args):
                 cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
             )
 
-            # Test metriği (opsiyonel)
+            # Test metriği (opsiyonel, varsa)
             if gt_t is not None:
                 gt_bin = torch.from_numpy((gt_t > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
-                prob_t = torch.from_numpy(p).unsqueeze(0).unsqueeze(0)
-                iou, f1 = iou_f1(prob_t, gt_bin, thr=thr)
+                pred_t = torch.from_numpy(m.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                iou, f1 = iou_f1(pred_t, gt_bin, thr=0.5)  # m zaten 0/1
                 ious.append(iou)
                 f1s.append(f1)
 
