@@ -65,7 +65,7 @@ def exg_vari_mask(rgb, vari_q=0.65):
     return m
 
 
-def postprocess_mask(m, prob=None, min_area=0, prob_thr=None):
+def postprocess_mask(m, prob=None, min_area=25, prob_thr=None):
     """
     m: (H,W) uint8 {0,1}
     - hafif close + dilate (küçük delikleri kapat, detayları koru)
@@ -74,7 +74,7 @@ def postprocess_mask(m, prob=None, min_area=0, prob_thr=None):
     m = (m > 0).astype(np.uint8)
 
     kernel = np.ones((3, 3), np.uint8)
-    # Opening'i kaldırdık, sadece close + küçük dilate:
+    # Opening yok, sadece close + küçük dilate:
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
     m = cv2.dilate(m, kernel, iterations=1)
 
@@ -109,10 +109,10 @@ def main(args):
     test_tag = getattr(args, "test_tag", "test")
     out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
 
-    # Threshold ve min_area / prob_thr defaultlarını güvene al
-    thr = getattr(args, "thr", 0.0)          # sen zaten 0 kullanıyorsun
-    min_area = getattr(args, "min_area", 0)  # küçük detayları kesmeyelim
-    prob_thr = getattr(args, "prob_thr", 0.7)
+    # Defaultlar: senin sevdiğin ayarlar
+    thr = getattr(args, "thr", 0.0)            # pixel threshold kapalı
+    min_area = getattr(args, "min_area", 25)   # minik gürültüleri kes
+    prob_thr = getattr(args, "prob_thr", 0.65) # component ortalama prob eşiği
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -240,10 +240,10 @@ if __name__ == "__main__":
     ap.add_argument("--test_tag", default="test")
     ap.add_argument("--mask_dir", default=None)
 
-    # Gürültü kontrol parametreleri
+    # Gürültü kontrol parametreleri (defaultlar gömülü)
     ap.add_argument("--thr", type=float, default=0.0)
-    ap.add_argument("--min_area", type=int, default=0)
-    ap.add_argument("--prob_thr", type=float, default=0.7)
+    ap.add_argument("--min_area", type=int, default=25)
+    ap.add_argument("--prob_thr", type=float, default=0.65)
 
     args = ap.parse_args()
     main(args)

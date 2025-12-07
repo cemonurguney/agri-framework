@@ -147,9 +147,9 @@ def main():
                       help="run_dir içindeki pred_<test_tag> klasör adı")
     p_te.add_argument("--thr", type=float, default=0.0,
                       help="Pixel-level threshold (0 => kapalı)")
-    p_te.add_argument("--min_area", type=int, default=0,
-                      help="Component area filtresi (0 => kapalı)")
-    p_te.add_argument("--prob_thr", type=float, default=0.7,
+    p_te.add_argument("--min_area", type=int, default=25,
+                      help="Component area filtresi")
+    p_te.add_argument("--prob_thr", type=float, default=0.65,
                       help="Component ortalama prob eşiği")
 
     args = parser.parse_args()
