@@ -4,19 +4,12 @@ numpy
 tqdm
 albumentations>=1.4.7
 
-# Deep Learning
+# Deep Learning (torch'u ayrı kuracağız)
 segmentation-models-pytorch==0.3.3
 timm==0.9.2
-
-# (Modeli kendin eğitiyorsun; PyTorch’u CUDA durumuna göre kur)
-# CPU:
-#   pip install torch torchvision torchaudio
-# CUDA 12.1 (NVIDIA):
-pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 
 # Utils / Extras
 pandas
 matplotlib
 tabulate
 scikit-learn
-
