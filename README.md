@@ -27,11 +27,11 @@ python .\classic\vari_otsu.py --in_dir .\data\images --out_dir .\outputs\samples
 ### Derin öğrenme (U-Net + EfficientNet-B3)
 #### Eğitim
 ```bash
-python .\dl\train_smp.py --img_dir .\data\images --mask_dir .\data\masks --out_dir .\outputs --size 384 --batch 4 --epochs 40 --lr 3e-4
+python run.py train --model_name unet --run_name unet_exg_vari_v1 --size 512 --batch 4 --epochs 40 --lr 3e-4 --pos_weight 2.0
 ```
 #### Tahmin
 ```bash
-python .\dl\infer_smp.py --img_dir .\data\test_images --out_dir .\outputs\pred_dl --size 384 --model .\outputs\model_smp.pt
+python run.py test --model_name unet --use_latest_run --size 512 --thr 0.65 --min_area 80 --test_tag exg_vari_v1
 ```
 #### Pseudo Üretim
 ```bash
