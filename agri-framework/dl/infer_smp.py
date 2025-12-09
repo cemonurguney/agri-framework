@@ -133,10 +133,10 @@ def main(args):
     # Dataset bilgisi (default / cwfid)
     dataset = getattr(args, "dataset", "default")
 
-    # Defaultlar: senin sevdiğin ayarlar
-    thr = getattr(args, "thr", 0.0)            # pixel threshold kapalı
-    min_area = getattr(args, "min_area", 25)   # minik gürültüleri kes
-    prob_thr = getattr(args, "prob_thr", 0.65) # component ortalama prob eşiği
+    # Defaultlar
+    thr = getattr(args, "thr", 0.0)            # hybrid için DL pixel threshold
+    min_area = getattr(args, "min_area", 25)
+    prob_thr = getattr(args, "prob_thr", 0.65)
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -168,7 +168,11 @@ def main(args):
     ])
 
     has_masks = args.mask_dir is not None and os.path.isdir(args.mask_dir)
-    ious, f1s = [], []
+
+    # Üç farklı sistem için metrik listeleri
+    ious_dl, f1s_dl = [], []
+    ious_color, f1s_color = [], []
+    ious_hybrid, f1s_hybrid = [], []
 
     aug = build_val_aug(args.size)
 
@@ -208,24 +212,30 @@ def main(args):
 
             # DL çıktısı (prob)
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]  # HxW, 0-1
-            m_dl = (p > thr).astype(np.uint8)  # thr=0 ise her yer 1, sorun değil
 
-            # Renk bazlı ön-maske (adaptif ExG + VARI)
+            # 1) DL-only maske (sadece model, sabit thr=0.5)
+            m_dl_only = (p > 0.5).astype(np.uint8)
+            m_dl_only_pp = postprocess_mask(m_dl_only, prob=None,
+                                            min_area=min_area, prob_thr=None)
+
+            # 2) Renk-only maske (sadece ExG+VARI)
             m_color = exg_vari_mask(r)
             m_color = (m_color > 0).astype(np.uint8)
+            m_color_pp = postprocess_mask(m_color, prob=None,
+                                          min_area=min_area, prob_thr=None)
 
-            # DL + renk öncülü kesişimi
-            m = (m_dl & m_color).astype(np.uint8)
+            # 3) Hybrid: DL (thr parametresi ile) + renk + prob-filtreli postprocess
+            m_dl_hybrid = (p > thr).astype(np.uint8)  # thr=0 → maskeyi geniş bırakıyoruz
+            m_hybrid = (m_dl_hybrid & m_color).astype(np.uint8)
+            m_hybrid_pp = postprocess_mask(m_hybrid, prob=p,
+                                           min_area=min_area, prob_thr=prob_thr)
 
-            # Post-process + prob filtresi
-            m = postprocess_mask(m, prob=p, min_area=min_area, prob_thr=prob_thr)
-
-            # Overlay
+            # Overlay için hybrid kullanıyoruz (asıl sistem bu)
             overlay = r.copy()
-            overlay[m > 0] = (
-                0.55 * overlay[m > 0] + 0.45 * np.array([255, 0, 0])
+            overlay[m_hybrid_pp > 0] = (
+                0.55 * overlay[m_hybrid_pp > 0] + 0.45 * np.array([255, 0, 0])
             ).astype(np.uint8)
-            edges = cv2.Canny((m * 255).astype(np.uint8), 0, 1)
+            edges = cv2.Canny((m_hybrid_pp * 255).astype(np.uint8), 0, 1)
             overlay[edges > 0] = [255, 0, 0]
             vis = np.hstack([r, overlay])
 
@@ -234,27 +244,63 @@ def main(args):
                 cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
             )
 
-            # Test metriği (opsiyonel, varsa)
+            # Test metrikleri (opsiyonel, varsa GT)
             if gt_t is not None:
                 gt_bin = torch.from_numpy(
                     (gt_t > 127).astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
-                pred_t = torch.from_numpy(
-                    m.astype(np.float32)
+
+                # DL-only
+                pred_dl = torch.from_numpy(
+                    m_dl_only_pp.astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
-                iou, f1 = iou_f1(pred_t, gt_bin, thr=0.5)  # m zaten 0/1
-                ious.append(iou)
-                f1s.append(f1)
+                i_dl, f1_dl = iou_f1(pred_dl, gt_bin, thr=0.5)
+                ious_dl.append(i_dl)
+                f1s_dl.append(f1_dl)
+
+                # Color-only
+                pred_color = torch.from_numpy(
+                    m_color_pp.astype(np.float32)
+                ).unsqueeze(0).unsqueeze(0)
+                i_c, f1_c = iou_f1(pred_color, gt_bin, thr=0.5)
+                ious_color.append(i_c)
+                f1s_color.append(f1_c)
+
+                # Hybrid
+                pred_h = torch.from_numpy(
+                    m_hybrid_pp.astype(np.float32)
+                ).unsqueeze(0).unsqueeze(0)
+                i_h, f1_h = iou_f1(pred_h, gt_bin, thr=0.5)
+                ious_hybrid.append(i_h)
+                f1s_hybrid.append(f1_h)
 
     # Test metriklerini run klasörüne yaz (varsa)
     if has_masks and run_dir is not None:
         import json
+        mIoU_dl      = float(np.mean(ious_dl))     if ious_dl      else 0.0
+        F1_dl        = float(np.mean(f1s_dl))      if f1s_dl       else 0.0
+        mIoU_color   = float(np.mean(ious_color))  if ious_color   else 0.0
+        F1_color     = float(np.mean(f1s_color))   if f1s_color    else 0.0
+        mIoU_hybrid  = float(np.mean(ious_hybrid)) if ious_hybrid  else 0.0
+        F1_hybrid    = float(np.mean(f1s_hybrid))  if f1s_hybrid   else 0.0
+
         test_metrics = {
-            "mIoU": float(np.mean(ious)) if ious else 0.0,
-            "F1": float(np.mean(f1s)) if f1s else 0.0,
-            "n_samples": len(ious),
+            # Eski key'ler: hybrid sonuç
+            "mIoU": mIoU_hybrid,
+            "F1": F1_hybrid,
+
+            # Ayrıştırılmış skorlar
+            "mIoU_dl": mIoU_dl,
+            "F1_dl": F1_dl,
+            "mIoU_color": mIoU_color,
+            "F1_color": F1_color,
+            "mIoU_hybrid": mIoU_hybrid,
+            "F1_hybrid": F1_hybrid,
+
+            "n_samples": len(ious_hybrid),
             "test_tag": test_tag,
         }
+
         with open(Path(run_dir) / f"test_metrics_{test_tag}.json", "w") as f:
             json.dump(test_metrics, f, indent=2)
         print("[✓] test metrics:", test_metrics)
