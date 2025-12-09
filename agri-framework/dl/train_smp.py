@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, random_split, Dataset
 import albumentations as A
-import segmentation_models_pytorch as smp
+import segmentation_models_pytorch as smp   
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
