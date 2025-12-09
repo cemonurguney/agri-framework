@@ -1,10 +1,13 @@
 from pathlib import Path
-import os, argparse
+import os, argparse, json
 import cv2
 import numpy as np
 import torch
 import albumentations as A
 import segmentation_models_pytorch as smp
+
+# Supervisely / Bonirob için foreground sınıfları
+FG_CLASSES = {"weed", "crop", "sugar beet", "sugarbeet"}
 
 
 def iou_f1(prob, y, thr=0.6, eps=1e-6):
@@ -121,6 +124,60 @@ def build_model(model_name: str):
         raise ValueError(f"Desteklenmeyen model_name: {model_name}")
 
 
+def load_gt_mask(mask_dir, name, dataset):
+    """
+    name: input image file name (örn: 001_image.png veya rgb_*.png)
+    dataset: "default" | "cwfid" | "bonirob" vs
+    PNG varsa onu, yoksa Supervisely .png.json okur.
+    """
+    if mask_dir is None or not os.path.isdir(mask_dir):
+        return None
+
+    stem = os.path.splitext(name)[0]
+
+    if dataset == "cwfid":
+        # 001_image -> 001_mask
+        stem = stem.replace("_image", "_mask")
+
+    png_path = os.path.join(mask_dir, stem + ".png")
+    json_path = os.path.join(mask_dir, stem + ".png.json")
+
+    # 1) PNG maske
+    if os.path.isfile(png_path):
+        gt = cv2.imread(png_path, 0)
+        if gt is None:
+            return None
+        if dataset == "cwfid":
+            # CWFiD: ot = siyah, arka plan = beyaz → ters çevir
+            gt = 255 - gt
+        return gt
+
+    # 2) Supervisely JSON
+    if os.path.isfile(json_path):
+        with open(json_path, "r") as f:
+            data = json.load(f)
+
+        h = data.get("size", {}).get("height")
+        w = data.get("size", {}).get("width")
+        if h is None or w is None:
+            return None
+
+        fg_classes = {c.lower() for c in FG_CLASSES}
+        mask = np.zeros((h, w), dtype=np.uint8)
+
+        for obj in data.get("objects", []):
+            cls = obj.get("classTitle", "").lower()
+            if cls not in fg_classes:
+                continue
+            pts = np.array(obj["points"]["exterior"], dtype=np.int32)
+            if pts.shape[0] >= 3:
+                cv2.fillPoly(mask, [pts], 255)
+
+        return mask
+
+    return None
+
+
 def main(args):
     # run.py'den gelmeyen kullanımda da patlamasın diye getattr
     run_dir = getattr(args, "run_dir", None)
@@ -130,13 +187,13 @@ def main(args):
     # Model ismini al, yoksa varsayılan unet
     model_name = getattr(args, "model_name", "unet")
 
-    # Dataset bilgisi (default / cwfid)
+    # Dataset bilgisi (default / cwfid / bonirob vs.)
     dataset = getattr(args, "dataset", "default")
 
     # Defaultlar
-    thr = getattr(args, "thr", 0.0)            # hybrid için DL pixel threshold
-    min_area = getattr(args, "min_area", 25)
-    prob_thr = getattr(args, "prob_thr", 0.65)
+    thr = getattr(args, "thr", 0.0)            # hybrid için pixel threshold
+    min_area = getattr(args, "min_area", 25)   # minik gürültüleri kes
+    prob_thr = getattr(args, "prob_thr", 0.65) # component ortalama prob eşiği
 
     # Eğer run_dir verilmiş ve out_dir default ise, pred klasörünü run içine koy
     if run_dir is not None and out_dir_arg == "outputs":
@@ -169,10 +226,9 @@ def main(args):
 
     has_masks = args.mask_dir is not None and os.path.isdir(args.mask_dir)
 
-    # Üç farklı sistem için metrik listeleri
+    ious_h, f1s_h = [], []
     ious_dl, f1s_dl = [], []
-    ious_color, f1s_color = [], []
-    ious_hybrid, f1s_hybrid = [], []
+    ious_c, f1s_c = [], []
 
     aug = build_val_aug(args.size)
 
@@ -180,26 +236,15 @@ def main(args):
         for name in img_files:
             ip = os.path.join(args.img_dir, name)
             im_bgr = cv2.imread(ip)
+            if im_bgr is None:
+                print(f"[WARN] image read failed, skipping: {ip}")
+                continue
+
             im = cv2.cvtColor(im_bgr, cv2.COLOR_BGR2RGB)
 
             gt = None
             if has_masks:
-                # Görüntü adı: 001_image.jpg/png
-                stem = os.path.splitext(name)[0]
-
-                # CWFiD: 001_image -> 001_mask
-                if dataset == "cwfid":
-                    stem = stem.replace("_image", "_mask")
-
-                base = stem + ".png"
-                mp = os.path.join(args.mask_dir, base)
-
-                if os.path.isfile(mp):
-                    gt = cv2.imread(mp, 0)
-
-                    # CWFiD: ot = siyah, arka plan = beyaz → ters çevir
-                    if dataset == "cwfid":
-                        gt = 255 - gt
+                gt = load_gt_mask(args.mask_dir, name, dataset)
 
             if gt is not None:
                 data = aug(image=im, mask=gt)
@@ -213,24 +258,27 @@ def main(args):
             # DL çıktısı (prob)
             p = torch.sigmoid(model(x.to(dev))).cpu().numpy()[0, 0]  # HxW, 0-1
 
-            # 1) DL-only maske (sadece model, sabit thr=0.5)
+            # ---- DL-only ----
             m_dl_only = (p > 0.5).astype(np.uint8)
             m_dl_only_pp = postprocess_mask(m_dl_only, prob=None,
                                             min_area=min_area, prob_thr=None)
 
-            # 2) Renk-only maske (sadece ExG+VARI)
+            # ---- Color-only ----
+            m_color_only = exg_vari_mask(r)
+            m_color_only = (m_color_only > 0).astype(np.uint8)
+            m_color_only_pp = postprocess_mask(m_color_only, prob=None,
+                                               min_area=min_area, prob_thr=None)
+
+            # ---- Hybrid (DL + renk) ----
+            m_dl_hybrid = (p > thr).astype(np.uint8)
             m_color = exg_vari_mask(r)
             m_color = (m_color > 0).astype(np.uint8)
-            m_color_pp = postprocess_mask(m_color, prob=None,
-                                          min_area=min_area, prob_thr=None)
 
-            # 3) Hybrid: DL (thr parametresi ile) + renk + prob-filtreli postprocess
-            m_dl_hybrid = (p > thr).astype(np.uint8)  # thr=0 → maskeyi geniş bırakıyoruz
             m_hybrid = (m_dl_hybrid & m_color).astype(np.uint8)
             m_hybrid_pp = postprocess_mask(m_hybrid, prob=p,
                                            min_area=min_area, prob_thr=prob_thr)
 
-            # Overlay için hybrid kullanıyoruz (asıl sistem bu)
+            # Overlay: hybrid'i gösteriyoruz
             overlay = r.copy()
             overlay[m_hybrid_pp > 0] = (
                 0.55 * overlay[m_hybrid_pp > 0] + 0.45 * np.array([255, 0, 0])
@@ -244,63 +292,55 @@ def main(args):
                 cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
             )
 
-            # Test metrikleri (opsiyonel, varsa GT)
+            # Test metrikleri (varsa GT)
             if gt_t is not None:
                 gt_bin = torch.from_numpy(
                     (gt_t > 127).astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
 
-                # DL-only
-                pred_dl = torch.from_numpy(
+                # DL-only metric
+                pred_dl_t = torch.from_numpy(
                     m_dl_only_pp.astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
-                i_dl, f1_dl = iou_f1(pred_dl, gt_bin, thr=0.5)
+                i_dl, f1_dl = iou_f1(pred_dl_t, gt_bin, thr=0.5)
                 ious_dl.append(i_dl)
                 f1s_dl.append(f1_dl)
 
-                # Color-only
-                pred_color = torch.from_numpy(
-                    m_color_pp.astype(np.float32)
+                # Color-only metric
+                pred_c_t = torch.from_numpy(
+                    m_color_only_pp.astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
-                i_c, f1_c = iou_f1(pred_color, gt_bin, thr=0.5)
-                ious_color.append(i_c)
-                f1s_color.append(f1_c)
+                i_c, f1_c = iou_f1(pred_c_t, gt_bin, thr=0.5)
+                ious_c.append(i_c)
+                f1s_c.append(f1_c)
 
-                # Hybrid
-                pred_h = torch.from_numpy(
+                # Hybrid metric
+                pred_h_t = torch.from_numpy(
                     m_hybrid_pp.astype(np.float32)
                 ).unsqueeze(0).unsqueeze(0)
-                i_h, f1_h = iou_f1(pred_h, gt_bin, thr=0.5)
-                ious_hybrid.append(i_h)
-                f1s_hybrid.append(f1_h)
+                i_h, f1_h = iou_f1(pred_h_t, gt_bin, thr=0.5)
+                ious_h.append(i_h)
+                f1s_h.append(f1_h)
 
     # Test metriklerini run klasörüne yaz (varsa)
     if has_masks and run_dir is not None:
-        import json
-        mIoU_dl      = float(np.mean(ious_dl))     if ious_dl      else 0.0
-        F1_dl        = float(np.mean(f1s_dl))      if f1s_dl       else 0.0
-        mIoU_color   = float(np.mean(ious_color))  if ious_color   else 0.0
-        F1_color     = float(np.mean(f1s_color))   if f1s_color    else 0.0
-        mIoU_hybrid  = float(np.mean(ious_hybrid)) if ious_hybrid  else 0.0
-        F1_hybrid    = float(np.mean(f1s_hybrid))  if f1s_hybrid   else 0.0
-
+        n = len(ious_h)
         test_metrics = {
-            # Eski key'ler: hybrid sonuç
-            "mIoU": mIoU_hybrid,
-            "F1": F1_hybrid,
+            "mIoU": float(np.mean(ious_h)) if ious_h else 0.0,
+            "F1": float(np.mean(f1s_h)) if f1s_h else 0.0,
 
-            # Ayrıştırılmış skorlar
-            "mIoU_dl": mIoU_dl,
-            "F1_dl": F1_dl,
-            "mIoU_color": mIoU_color,
-            "F1_color": F1_color,
-            "mIoU_hybrid": mIoU_hybrid,
-            "F1_hybrid": F1_hybrid,
+            "mIoU_dl": float(np.mean(ious_dl)) if ious_dl else 0.0,
+            "F1_dl": float(np.mean(f1s_dl)) if f1s_dl else 0.0,
 
-            "n_samples": len(ious_hybrid),
+            "mIoU_color": float(np.mean(ious_c)) if ious_c else 0.0,
+            "F1_color": float(np.mean(f1s_c)) if f1s_c else 0.0,
+
+            "mIoU_hybrid": float(np.mean(ious_h)) if ious_h else 0.0,
+            "F1_hybrid": float(np.mean(f1s_h)) if f1s_h else 0.0,
+
+            "n_samples": n,
             "test_tag": test_tag,
         }
-
         with open(Path(run_dir) / f"test_metrics_{test_tag}.json", "w") as f:
             json.dump(test_metrics, f, indent=2)
         print("[✓] test metrics:", test_metrics)
@@ -328,11 +368,11 @@ if __name__ == "__main__":
     ap.add_argument("--min_area", type=int, default=25)
     ap.add_argument("--prob_thr", type=float, default=0.65)
 
-    # Dataset tipi
+    # Dataset tipi (cwfid için mask invert, isim eşleştirme vs)
     ap.add_argument(
         "--dataset",
         default="default",
-        choices=["default", "cwfid"],
+        choices=["default", "cwfid", "bonirob"],
     )
 
     args = ap.parse_args()

@@ -5,9 +5,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, random_split, Dataset
 import albumentations as A
-import segmentation_models_pytorch as smp   
+import segmentation_models_pytorch as smp
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+
+# Supervisely / Bonirob için foreground sınıfları
+FG_CLASSES = {"weed", "crop", "sugar beet", "sugarbeet"}
 
 
 class SegDs(Dataset):
@@ -20,6 +23,19 @@ class SegDs(Dataset):
         ])
         self.mask_dir = mask_dir
         self.size = size
+        self.fg_classes = {c.lower() for c in FG_CLASSES}
+
+        # Sadece maskesi olan img'leri tut (png veya png.json)
+        if self.mask_dir is not None and os.path.isdir(self.mask_dir):
+            valid_imgs = []
+            for ip in self.imgs:
+                base = os.path.splitext(os.path.basename(ip))[0]
+                png_path = os.path.join(self.mask_dir, base + ".png")
+                json_path = os.path.join(self.mask_dir, base + ".png.json")
+                if os.path.isfile(png_path) or os.path.isfile(json_path):
+                    valid_imgs.append(ip)
+            if valid_imgs:
+                self.imgs = sorted(valid_imgs)
 
         aug_train = A.Compose([
             A.LongestMaxSize(max_size=size),
@@ -42,15 +58,57 @@ class SegDs(Dataset):
     def __len__(self):
         return len(self.imgs)
 
+    def _load_mask(self, img_path, im_shape):
+        """
+        img_path: data/images/.../rgb_....png
+        im_shape: (H, W)
+        Önce .png maske arar, yoksa Supervisely .png.json okur.
+        """
+        if self.mask_dir is None:
+            return np.zeros(im_shape, np.uint8)
+
+        base = os.path.splitext(os.path.basename(img_path))[0]
+        png_path = os.path.join(self.mask_dir, base + ".png")
+        json_path = os.path.join(self.mask_dir, base + ".png.json")
+
+        # 1) Düz PNG maske
+        if os.path.isfile(png_path):
+            m = cv2.imread(png_path, 0)
+            if m is None:
+                m = np.zeros(im_shape, np.uint8)
+            return m
+
+        # 2) Supervisely JSON maske
+        if os.path.isfile(json_path):
+            with open(json_path, "r") as f:
+                data = json.load(f)
+
+            h = data.get("size", {}).get("height", im_shape[0])
+            w = data.get("size", {}).get("width", im_shape[1])
+            mask = np.zeros((h, w), dtype=np.uint8)
+
+            for obj in data.get("objects", []):
+                cls = obj.get("classTitle", "").lower()
+                if cls not in self.fg_classes:
+                    continue
+                pts = np.array(obj["points"]["exterior"], dtype=np.int32)
+                if pts.shape[0] >= 3:
+                    cv2.fillPoly(mask, [pts], 255)
+
+            return mask
+
+        # 3) Hiç maske yoksa: full background
+        return np.zeros(im_shape, np.uint8)
+
     def __getitem__(self, i):
         ip = self.imgs[i]
-        name = os.path.splitext(os.path.basename(ip))[0] + ".png"
-        mp = os.path.join(self.mask_dir, name)
 
-        im = cv2.cvtColor(cv2.imread(ip), cv2.COLOR_BGR2RGB)
-        m = cv2.imread(mp, 0)
-        if m is None:
-            m = np.zeros(im.shape[:2], np.uint8)
+        raw = cv2.imread(ip, cv2.IMREAD_COLOR)
+        if raw is None:
+            raise RuntimeError(f"image read failed: {ip}")
+        im = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+
+        m = self._load_mask(ip, im.shape[:2])
 
         data = self.aug(image=im, mask=m)
         im, m = data["image"], data["mask"]
@@ -149,7 +207,7 @@ def main(args):
     # DUZENLEME: drop_last=True eklendi
     dl_tr = DataLoader(tr, batch_size=args.batch, shuffle=True,
                        num_workers=workers, pin_memory=pin, drop_last=True)
-                       
+
     dl_va = DataLoader(va, batch_size=args.batch,
                        num_workers=workers, pin_memory=pin)
 
@@ -157,7 +215,7 @@ def main(args):
     model = build_model(model_name).to(dev)
 
     # Class imbalance için opsiyonel pos_weight
-    pw = getattr(args, "pos_weight", 1.0)  # run.py'den geliyorsa olmayabilir
+    pw = getattr(args, "pos_weight", 1.0)
     pos_weight = torch.tensor([pw], device=dev)
     loss_bce = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
