@@ -33,11 +33,6 @@ def build_val_aug(size):
 def exg_vari_mask(rgb, vari_q=0.65):
     """
     Adaptif ExG + VARI maskeleme.
-    - ExG için Otsu threshold
-    - VARI için quantile (varsayılan en üst ~%35)
-
-    rgb: HxWx3, uint8 (0-255)
-    çıktı: 0/1 uint8
     """
     rgb = rgb.astype(np.float32)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
@@ -68,13 +63,12 @@ def exg_vari_mask(rgb, vari_q=0.65):
 def postprocess_mask(m, prob=None, min_area=25, prob_thr=None):
     """
     m: (H,W) uint8 {0,1}
-    - hafif close + dilate (küçük delikleri kapat, detayları koru)
+    - hafif close + dilate
     - küçük componentleri ve düşük ortalama prob'lu componentleri sil
     """
     m = (m > 0).astype(np.uint8)
 
     kernel = np.ones((3, 3), np.uint8)
-    # Opening yok, sadece close + küçük dilate:
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
     m = cv2.dilate(m, kernel, iterations=1)
 
@@ -103,11 +97,38 @@ def postprocess_mask(m, prob=None, min_area=25, prob_thr=None):
     return m
 
 
+def build_model(model_name: str):
+    """Egitimdeki gibi model mimarisini secen yardimci fonksiyon."""
+    encoder = "timm-efficientnet-b3"
+    # Inference sırasında weight=None yapabiliriz çünkü load_state_dict ile yükleyeceğiz.
+    kwargs = dict(
+        encoder_name=encoder,
+        encoder_weights=None, 
+        in_channels=3,
+        classes=1,
+    )
+
+    model_name = model_name.lower()
+    if model_name == "unet":
+        return smp.Unet(**kwargs)
+    elif model_name in ("unetpp", "unet++"):
+        return smp.UnetPlusPlus(**kwargs)
+    elif model_name in ("deeplabv3p", "deeplabv3plus"):
+        return smp.DeepLabV3Plus(**kwargs)
+    elif model_name == "fpn":
+        return smp.FPN(**kwargs)
+    else:
+        raise ValueError(f"Desteklenmeyen model_name: {model_name}")
+
+
 def main(args):
     # run.py'den gelmeyen kullanımda da patlamasın diye getattr
     run_dir = getattr(args, "run_dir", None)
     test_tag = getattr(args, "test_tag", "test")
     out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
+    
+    # Model ismini al, yoksa varsayılan unet
+    model_name = getattr(args, "model_name", "unet")
 
     # Defaultlar: senin sevdiğin ayarlar
     thr = getattr(args, "thr", 0.0)            # pixel threshold kapalı
@@ -125,17 +146,17 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    model = smp.Unet(
-        encoder_name="timm-efficientnet-b3",
-        encoder_weights=None,  # zaten weight yükleyeceğiz
-        in_channels=3,
-        classes=1
-    ).to(dev)
+    
+    # --- DÜZELTME: Dinamik Model Seçimi ---
+    print(f"[INFO] Building model: {model_name}...")
+    model = build_model(model_name).to(dev)
 
     try:
         sd = torch.load(args.model, map_location=dev, weights_only=True)
     except TypeError:
         sd = torch.load(args.model, map_location=dev)
+    
+    # State dict yükle
     model.load_state_dict(sd)
     model.eval()
 
@@ -234,6 +255,9 @@ if __name__ == "__main__":
     ap.add_argument("--out_dir", default="outputs/pred_dl")
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--model", default="outputs/model_smp.pt")
+    
+    # YENİ: Model ismini parametre olarak ekledik
+    ap.add_argument("--model_name", default="unet", help="unet | unetpp | deeplabv3p")
 
     # Yeni: run + opsiyonel test mask
     ap.add_argument("--run_dir", default=None)

@@ -146,8 +146,10 @@ def main(args):
     pin = dev == "cuda"
     workers = 2 if dev == "cuda" else 0
 
+    # DUZENLEME: drop_last=True eklendi
     dl_tr = DataLoader(tr, batch_size=args.batch, shuffle=True,
-                       num_workers=workers, pin_memory=pin)
+                       num_workers=workers, pin_memory=pin, drop_last=True)
+                       
     dl_va = DataLoader(va, batch_size=args.batch,
                        num_workers=workers, pin_memory=pin)
 

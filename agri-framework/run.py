@@ -110,6 +110,7 @@ def cmd_test(args):
         out_dir=args.out_dir,  # infer run_dir varsa onun içine yazar
         size=args.size,
         model=str(model_path),
+        model_name=model_name, # <--- DUZENLEME BURADA YAPILDI (EKLENDI)
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
         mask_dir=mask_dir,     # BURADAN GT maskeler gidiyor, skor buradan hesaplanıyor
@@ -181,4 +182,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#!python run.py test --model_name unet --run_name unet_v2 --size 512 --dataset cwfid --test_tag cwfid_ours
