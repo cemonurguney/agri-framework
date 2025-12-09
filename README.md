@@ -27,7 +27,8 @@ python .\classic\vari_otsu.py --in_dir .\data\images --out_dir .\outputs\samples
 ### Derin öğrenme (U-Net + EfficientNet-B3)
 #### Eğitim
 ```bash
-python run.py train --model_name unetpp --run_name unetpp_exg_vari_v1 --size 512 --batch 4 --epochs 100 --lr 3e-4 --pos_weight 2.0```
+python run.py train --model_name unetpp --run_name unetpp_exg_vari_v1 --size 512 --batch 4 --epochs 100 --lr 3e-4 --pos_weight 2.0
+```
 #### Tahmin
 ```bash
 python run.py test \
