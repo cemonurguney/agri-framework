@@ -110,13 +110,14 @@ def cmd_test(args):
         out_dir=args.out_dir,  # infer run_dir varsa onun içine yazar
         size=args.size,
         model=str(model_path),
-        model_name=model_name, # <--- DUZENLEME BURADA YAPILDI (EKLENDI)
+        model_name=model_name,
         run_dir=str(run_dir) if run_dir is not None else None,
         test_tag=args.test_tag,
         mask_dir=mask_dir,     # BURADAN GT maskeler gidiyor, skor buradan hesaplanıyor
         thr=args.thr,
         min_area=args.min_area,
         prob_thr=args.prob_thr,
+        dataset=args.dataset,  # <<< EKLENDİ
     )
 
     infer_smp.main(infer_args)

@@ -100,10 +100,10 @@ def postprocess_mask(m, prob=None, min_area=25, prob_thr=None):
 def build_model(model_name: str):
     """Egitimdeki gibi model mimarisini secen yardimci fonksiyon."""
     encoder = "timm-efficientnet-b3"
-    # Inference sırasında weight=None yapabiliriz çünkü load_state_dict ile yükleyeceğiz.
+    # Inference sırasında encoder_weights=None, çünkü load_state_dict ile yükleyeceğiz.
     kwargs = dict(
         encoder_name=encoder,
-        encoder_weights=None, 
+        encoder_weights=None,
         in_channels=3,
         classes=1,
     )
@@ -126,9 +126,12 @@ def main(args):
     run_dir = getattr(args, "run_dir", None)
     test_tag = getattr(args, "test_tag", "test")
     out_dir_arg = getattr(args, "out_dir", "outputs/pred_dl")
-    
+
     # Model ismini al, yoksa varsayılan unet
     model_name = getattr(args, "model_name", "unet")
+
+    # Dataset bilgisi (default / cwfid)
+    dataset = getattr(args, "dataset", "default")
 
     # Defaultlar: senin sevdiğin ayarlar
     thr = getattr(args, "thr", 0.0)            # pixel threshold kapalı
@@ -146,8 +149,7 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # --- DÜZELTME: Dinamik Model Seçimi ---
+
     print(f"[INFO] Building model: {model_name}...")
     model = build_model(model_name).to(dev)
 
@@ -155,8 +157,7 @@ def main(args):
         sd = torch.load(args.model, map_location=dev, weights_only=True)
     except TypeError:
         sd = torch.load(args.model, map_location=dev)
-    
-    # State dict yükle
+
     model.load_state_dict(sd)
     model.eval()
 
@@ -179,10 +180,22 @@ def main(args):
 
             gt = None
             if has_masks:
-                base = os.path.splitext(name)[0] + ".png"
+                # Görüntü adı: 001_image.jpg/png
+                stem = os.path.splitext(name)[0]
+
+                # CWFiD: 001_image -> 001_mask
+                if dataset == "cwfid":
+                    stem = stem.replace("_image", "_mask")
+
+                base = stem + ".png"
                 mp = os.path.join(args.mask_dir, base)
+
                 if os.path.isfile(mp):
                     gt = cv2.imread(mp, 0)
+
+                    # CWFiD: ot = siyah, arka plan = beyaz → ters çevir
+                    if dataset == "cwfid":
+                        gt = 255 - gt
 
             if gt is not None:
                 data = aug(image=im, mask=gt)
@@ -255,19 +268,26 @@ if __name__ == "__main__":
     ap.add_argument("--out_dir", default="outputs/pred_dl")
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--model", default="outputs/model_smp.pt")
-    
-    # YENİ: Model ismini parametre olarak ekledik
-    ap.add_argument("--model_name", default="unet", help="unet | unetpp | deeplabv3p")
 
-    # Yeni: run + opsiyonel test mask
+    # Model ismi
+    ap.add_argument("--model_name", default="unet", help="unet | unetpp | deeplabv3p | fpn")
+
+    # run + opsiyonel test mask
     ap.add_argument("--run_dir", default=None)
     ap.add_argument("--test_tag", default="test")
     ap.add_argument("--mask_dir", default=None)
 
-    # Gürültü kontrol parametreleri (defaultlar gömülü)
+    # Gürültü kontrol parametreleri
     ap.add_argument("--thr", type=float, default=0.0)
     ap.add_argument("--min_area", type=int, default=25)
     ap.add_argument("--prob_thr", type=float, default=0.65)
+
+    # Dataset tipi
+    ap.add_argument(
+        "--dataset",
+        default="default",
+        choices=["default", "cwfid"],
+    )
 
     args = ap.parse_args()
     main(args)
